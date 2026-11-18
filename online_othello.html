@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>オンラインオセロ</title>
+<style>
+:root{color-scheme:dark;--bg:#101820;--panel:#1c2a35;--green:#14784f;--line:#0b4e36;--gold:#ffd166;--muted:#a9bac7}
+*{box-sizing:border-box}body{margin:0;background:radial-gradient(circle at top,#203746,#101820 60%);color:#f4f7f9;font-family:system-ui,-apple-system,sans-serif;min-height:100vh;padding:24px 14px}
+main{max-width:760px;margin:auto}.head{text-align:center;margin-bottom:18px}.head h1{margin:0;font-size:clamp(28px,6vw,42px)}.head p{color:var(--muted);margin:6px 0}
+.panel{background:var(--panel);border:1px solid #314553;border-radius:16px;padding:16px;margin:12px 0;box-shadow:0 12px 30px #0003}
+.row{display:flex;gap:9px;flex-wrap:wrap;align-items:center}input,button{font:inherit;border-radius:10px;padding:11px 13px;border:1px solid #496071}input{background:#101b24;color:white;min-width:0;flex:1}button{background:#e8f1f5;color:#12212b;font-weight:700;cursor:pointer}button.primary{background:var(--gold);border-color:var(--gold)}button:disabled{opacity:.45;cursor:not-allowed}
+#status{font-weight:700;font-size:18px;margin:4px 0 10px}.meta{display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap;color:var(--muted);font-size:14px}
+.board{width:min(92vw,560px);aspect-ratio:1;margin:16px auto;background:var(--line);padding:7px;display:grid;grid-template-columns:repeat(8,1fr);gap:3px;border-radius:9px;box-shadow:0 12px 30px #0005}
+.cell{background:#16845a;border:0;border-radius:2px;padding:0;position:relative;display:grid;place-items:center;min-width:0;min-height:0}
+.cell:focus-visible{outline:3px solid var(--gold);z-index:2}.disc{width:82%;height:82%;border-radius:50%;box-shadow:inset -3px -4px 7px #0005,0 2px 4px #0005}.black{background:radial-gradient(circle at 35% 28%,#555,#080b0d 65%)}.white{background:radial-gradient(circle at 35% 28%,#fff,#cbd4da 75%)}
+.hint:after{content:"";width:20%;height:20%;border-radius:50%;background:#b8edcfaa;position:absolute}
+.score{display:flex;justify-content:center;gap:30px;font-size:18px;font-weight:700}.score span{display:flex;align-items:center;gap:8px}.mini{width:17px;height:17px;border-radius:50%;display:inline-block}.blackmini{background:#080b0d;border:1px solid #68747c}.whitemini{background:#f4f6f7;border:1px solid #9ba8b0}
+.note{color:var(--muted);font-size:13px;line-height:1.6}.hidden{display:none!important}.room{font-size:24px;font-weight:800;letter-spacing:3px;color:var(--gold)}
+@media(max-width:420px){body{padding:16px 9px}.panel{padding:12px}.board{padding:5px;gap:2px}}
+</style>
+</head>
+<body>
+<main>
+ <header class="head"><h1>● オンラインオセロ</h1><p>ルームコードを共有して、友達と対戦しよう。</p></header>
+ <section class="panel" id="setup">
+  <div class="row"><input id="name" maxlength="16" placeholder="あなたの名前" value="プレイヤー"><button class="primary" id="create">部屋を作る</button></div>
+  <div class="row" style="margin-top:10px"><input id="roomInput" maxlength="6" placeholder="6桁のルームコード"><button id="join">部屋に参加</button></div>
+  <p class="note">別々の端末・ブラウザから参加できます。部屋を作った人が黒、参加した人が白です。</p>
+ </section>
+ <section class="panel hidden" id="game">
+  <div class="meta"><span>ルームコード</span><span id="roomCode" class="room"></span><button id="copy">コードをコピー</button></div>
+  <div class="meta" style="margin-top:10px"><span id="blackPlayer">● 黒：-</span><span id="whitePlayer">○ 白：待機中</span></div>
+  <div id="status" style="margin-top:14px">対戦相手を待っています…</div>
+  <div class="score"><span><i class="mini blackmini"></i><b id="blackScore">2</b></span><span><i class="mini whitemini"></i><b id="whiteScore">2</b></span></div>
+  <div class="board" id="board" aria-label="オセロ盤"></div>
+  <div class="row" style="justify-content:center"><button id="pass" disabled>パスする</button><button id="leave">退出する</button></div>
+  <p class="note" id="hint" style="text-align:center">相手が参加すると対戦が始まります。</p>
+ </section>
+ <section class="panel">
+  <strong>遊び方</strong>
+  <p class="note">自分の色で相手の石を縦・横・斜めに挟むと、その石が自分の色に変わります。置ける場所がない場合はパス。両者とも置けなくなったら終了し、石が多い方の勝ちです。</p>
+ </section>
+</main>
+<script type="module">
+import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm';
+
+// Supabaseの Project URL と anon key をここに設定してください。
+const SUPABASE_URL = 'YOUR_SUPABASE_URL';
+const SUPABASE_ANON_KEY = 'YOUR_SUPABASE_ANON_KEY';
+
+const $ = id => document.getElementById(id);
+let supabase, roomId='', myColor='', room=null, channel=null, polling=null, busy=false;
+const initialBoard=()=>{const b=Array(64).fill(0);b[27]=2;b[28]=1;b[35]=1;b[36]=2;return b};
+const initialState=()=>({board:initialBoard(),turn:1,passCount:0,finished:false,winner:0});
+const dirs=[[-1,-1],[-1,0],[-1,1],[0,-1],[0,1],[1,-1],[1,0],[1,1]];
+const inside=(r,c)=>r>=0&&r<8&&c>=0&&c<8;
+function captures(board,index,color){const r=index>>3,c=index%8,found=[];for(const [dr,dc] of dirs){let rr=r+dr,cc=c+dc,line=[];while(inside(rr,cc)&&board[rr*8+cc]===3-color){line.push(rr*8+cc);rr+=dr;cc+=dc}if(line.length&&inside(rr,cc)&&board[rr*8+cc]===color)found.push(...line)}return found}
+function legalMoves(state,color){return state.board.map((v,i)=>v===0&&captures(state.board,i,color).length?i:-1).filter(i=>i>=0)}
+function counts(board){return [board.filter(x=>x===1).length,board.filter(x=>x===2).length]}
+function statusText(){if(!room)return '';if(!room.player_white)return '対戦相手を待っています…';if(room.state.finished){const [b,w]=counts(room.state.board);return b===w?'引き分け！':(room.state.winner===1?'黒の勝ち！':'白の勝ち！')}return room.state.turn===(myColor==='black'?1:2)?'あなたの番です':'相手の番です'}
+function render(){if(!room)return;const s=room.state,[b,w]=counts(s.board),me=myColor==='black'?1:2,moves=legalMoves(s,me);$('blackScore').textContent=b;$('whiteScore').textContent=w;$('blackPlayer').textContent='● 黒：'+(room.player_black||'');$('whitePlayer').textContent='○ 白：'+(room.player_white||'待機中');$('status').textContent=statusText();$('pass').disabled=busy||!room.player_white||s.finished||s.turn!==me||moves.length>0;$('hint').textContent=s.finished?'対戦終了':(!room.player_white?'相手にルームコードを共有してください':(s.turn===me?'置く場所を選んでください':'相手の手を待っています…'));
+const board=$('board');board.innerHTML='';for(let i=0;i<64;i++){const cell=document.createElement('button');cell.className='cell';cell.setAttribute('aria-label',`${Math.floor(i/8)+1}行${i%8+1}列`);if(s.board[i]){const disc=document.createElement('i');disc.className='disc '+(s.board[i]===1?'black':'white');cell.append(disc)}else if(!s.finished&&s.turn===me&&moves.includes(i)){cell.classList.add('hint')}cell.disabled=busy||!room.player_white||s.finished||s.turn!==me||!moves.includes(i);cell.addEventListener('click',()=>play(i));board.append(cell)}}
+async function saveState(next){busy=true;render();const {data,error}=await supabase.from('othello_rooms').update({state:next,updated_at:new Date().toISOString()}).eq('id',roomId).select().single();busy=false;if(error){$('hint').textContent='更新に失敗しました。接続を確認してください。';render();return}room=data;render()}
+async function play(i){if(busy||!room||room.state.finished)return;const color=myColor==='black'?1:2,s=structuredClone(room.state);if(s.turn!==color||s.board[i]!==0)return;const flips=captures(s.board,i,color);if(!flips.length)return;s.board[i]=color;flips.forEach(x=>s.board[x]=color);s.passCount=0;s.turn=3-color;let nextMoves=legalMoves(s,s.turn);if(!nextMoves.length){s.passCount++;s.turn=color;if(!legalMoves(s,color).length){s.finished=true;const [b,w]=counts(s.board);s.winner=b===w?0:(b>w?1:2)}}await saveState(s)}
+async function pass(){if(!room||busy)return;const color=myColor==='black'?1:2,s=structuredClone(room.state);if(s.turn!==color||legalMoves(s,color).length)return;s.turn=3-color;s.passCount++;if(!legalMoves(s,s.turn)){s.finished=true;const [b,w]=counts(s.board);s.winner=b===w?0:(b>w?1:2)}await saveState(s)}
+function subscribe(){if(channel)supabase.removeChannel(channel);channel=supabase.channel('room-'+roomId).on('postgres_changes',{event:'*',schema:'public',table:'othello_rooms',filter:'id=eq.'+roomId},payload=>{if(payload.new){room=payload.new;render()}}).subscribe();if(polling)clearInterval(polling);polling=setInterval(refresh,1800)}
+async function refresh(){if(!roomId||!supabase)return;const {data}=await supabase.from('othello_rooms').select('*').eq('id',roomId).maybeSingle();if(data){room=data;render()}}
+async function enter(id,color){roomId=id;myColor=color;await refresh();if(!room){alert('部屋が見つかりません。コードを確認してください。');return} $('setup').classList.add('hidden');$('game').classList.remove('hidden');$('roomCode').textContent=roomId;subscribe();render()}
+function makeCode(){return Math.floor(100000+Math.random()*900000).toString()}
+$('create').onclick=async()=>{if(!ready())return;const id=makeCode(),name=$('name').value.trim()||'黒プレイヤー';const {data,error}=await supabase.from('othello_rooms').insert({id,player_black:name,state:initialState()}).select().single();if(error){alert('部屋を作れませんでした。Supabaseの設定を確認してください。');return}await enter(id,'black')};
+$('join').onclick=async()=>{if(!ready())return;const id=$('roomInput').value.trim(),name=$('name').value.trim()||'白プレイヤー';if(!/^\d{6}$/.test(id)){alert('6桁のコードを入力してください。');return}const {data,error}=await supabase.from('othello_rooms').select('*').eq('id',id).maybeSingle();if(error||!data){alert('部屋が見つかりません。');return}if(data.player_white){alert('この部屋は満員です。');return}const {error:upErr}=await supabase.from('othello_rooms').update({player_white:name}).eq('id',id).is('player_white',null);if(upErr){alert('参加できませんでした。');return}await enter(id,'white')};
+function ready(){if(!supabase){alert('最初にHTML内のSupabase URLとanon keyを設定してください。');return false}return true}
+$('pass').onclick=pass;$('copy').onclick=()=>navigator.clipboard?.writeText(roomId).then(()=>$('copy').textContent='コピーしました');$('leave').onclick=()=>{if(channel)supabase.removeChannel(channel);if(polling)clearInterval(polling);roomId='';room=null;$('game').classList.add('hidden');$('setup').classList.remove('hidden')};
+if(SUPABASE_URL.startsWith('https://')&&SUPABASE_ANON_KEY!=='YOUR_SUPABASE_ANON_KEY')supabase=createClient(SUPABASE_URL,SUPABASE_ANON_KEY);
+</script>
+</body>
+</html>
